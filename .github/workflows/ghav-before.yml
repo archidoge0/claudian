@@ -1,0 +1,39 @@
+name: "ghav before: CI"
+"on":
+  push:
+    branches:
+      - ghav/dev/1430
+    paths:
+      - .ghav/before
+permissions:
+  contents: read
+jobs:
+  test-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      test-files: "null"
+      test-shards: "[\"1/2\",\"2/2\"]"
+      script-tests: "null"
+      cross-platform-tests: "null"
+      cross-platform-shards: "[\"1/2\",\"2/2\"]"
+      pi-windows: "true"
+      has-tests: "true"
+      cross-platform: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Select affected tests and platform checks
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ciTestSelection.mjs
