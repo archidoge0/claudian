@@ -1,8 +1,6 @@
 name: Potential Duplicates
 on:
-  issues:
-    types: [opened, edited]
-
+  workflow_dispatch:
 jobs:
   check-duplicates:
     runs-on: ubuntu-latest
