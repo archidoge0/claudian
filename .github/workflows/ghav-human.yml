@@ -1,0 +1,173 @@
+name: "ghav human: CI"
+"on":
+  push:
+    branches:
+      - ghav/dev/1353
+    paths:
+      - .ghav/human
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+  selected-tests:
+    needs: test-scope
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON('["1/2","2/2"]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: "ghav: historical clock for tests"
+        run: |-
+          sudo apt-get update -qq && sudo apt-get install -y -qq faketime >/dev/null
+          echo "LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1" >> "$GITHUB_ENV"
+          echo "FAKETIME=@2026-09-19 10:25:29" >> "$GITHUB_ENV"
+          echo "FAKETIME_DONT_FAKE_MONOTONIC=1" >> "$GITHUB_ENV"
+      - name: Test
+        id: tests
+        env:
+          TEST_SELECTION: ${{ 'null' }}
+          SCRIPT_SELECTION: ${{ matrix.shard == '2/2' && '[]' || 'null' }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p test-results
+          npm run test -- --selection "$TEST_SELECTION" --script-selection "$SCRIPT_SELECTION" --shard="$TEST_SHARD" --maxWorkers=3 --json --outputFile=test-results/jest.json
+      - name: "ghav: real clock again"
+        if: always()
+        run: |-
+          echo "LD_PRELOAD=" >> "$GITHUB_ENV"
+          echo "FAKETIME=" >> "$GITHUB_ENV"
+      - name: Summarize test timings
+        if: always() && steps.tests.outcome != 'skipped' && 'null' != '[]'
+        run: node scripts/summarize-jest-results.mjs test-results/jest.json test-results/timings
+      - name: Upload test timings
+        if: always() && steps.tests.outcome != 'skipped' && 'null' != '[]'
+        uses: actions/upload-artifact@v7
+        with:
+          name: jest-timings-${{ strategy.job-index }}
+          path: test-results/timings/
+          if-no-files-found: error
+          retention-days: 14
+  test-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      test-files: "null"
+      test-shards: "[\"1/2\",\"2/2\"]"
+      script-tests: "null"
+      cross-platform-tests: "null"
+      pi-windows: "true"
+      has-tests: "true"
+      lan: "true"
+      cross-platform: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Select affected tests and platform checks
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ciTestSelection.mjs
+  lan-compatibility:
+    needs: test-scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify published LAN compatibility
+        run: npm run test:lan-compatibility
+  test:
+    needs:
+      - test-scope
+      - selected-tests
+      - lan-compatibility
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require selected tests and applicable LAN compatibility
+        env:
+          SCOPE_RESULT: ${{ needs.test-scope.result }}
+          TEST_RESULT: ${{ needs.selected-tests.result }}
+          HAS_TESTS: ${{ 'true' }}
+          LAN_RESULT: ${{ needs.lan-compatibility.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          if [ "$HAS_TESTS" = true ]; then
+            test "$TEST_RESULT" = success
+          else
+            test "$TEST_RESULT" = skipped
+          fi
+          test "$LAN_RESULT" = success || test "$LAN_RESULT" = skipped
+  build-artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build and inspect production artifacts
+        run: npm run build && npm run check:performance
+  build:
+    needs:
+      - quality
+      - test
+      - build-artifacts
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require quality, tests and production artifacts
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build-artifacts.result }}
+        run: |
+          test "$QUALITY_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$BUILD_RESULT" = success
